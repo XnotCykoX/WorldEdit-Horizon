@@ -21,6 +21,7 @@
 // for the duration of a call and put back afterwards, so nothing of the mod is
 // borrowed while game code runs and no field is added to `Game`.
 use super::Game;
+use super::worldedit_schem;
 use horizon_world::registry::BlockStateId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -68,13 +69,17 @@ const COMMANDS: &[&str] = &[
     "undo",
     "redo",
     "clearhistory",
+    "schem",
+    "load",
 ];
 #[derive(Default)]
 struct State {
     pos1: Option<Pos>,
     pos2: Option<Pos>,
-    /// Clipboard blocks, relative to their own low corner.
+    /// Clipboard blocks, relative to the paste origin.
     clipboard: Vec<(Pos, BlockStateId)>,
+    /// What is in the clipboard, for `//paste`'s report.
+    clipboard_name: String,
     /// Each edit's previous blocks, newest last.
     undo: Vec<Vec<(Pos, BlockStateId)>>,
     redo: Vec<Vec<(Pos, BlockStateId)>>,
@@ -488,6 +493,8 @@ fn help(game: &mut Game<'_>) {
         "//sphere, //hsphere, //cyl, //hcyl, //pyramid, //hpyramid <block> <radius> [height]",
         "//line <block> [thickness], //copy, //cut, //paste, //move <amount> <dir>",
         "//count <block>, //distr, //undo, //redo, //clearhistory",
+        "//schem save <name>, //schem load <name>, //schem list, then //paste",
+        "Schematics read .schem (Sponge), .litematic (Litematica) and .schematic (MCEdit).",
     ] {
         message(game, line);
     }
@@ -570,6 +577,8 @@ impl Game<'_> {
             "move" => move_selection(game, state, args),
             "undo" => undo(game, state),
             "redo" => redo(game, state),
+            "schem" => schem(game, state, args),
+            "load" => load(game, state, args),
             _ => {
                 state.undo.clear();
                 state.redo.clear();
@@ -1205,6 +1214,7 @@ fn copy(game: &mut Game<'_>, state: &mut State, cut: bool) -> bool {
     }
     let copied = blocks.len();
     state.clipboard = blocks;
+    state.clipboard_name = "the copied region".to_owned();
     if cut {
         let air = Pattern::of(air(game), "minecraft:air".to_owned());
         let positions = collect(game, lo, hi, |_, _| true);
@@ -1234,12 +1244,19 @@ fn paste_at(game: &mut Game<'_>, state: &mut State, at: Pos) -> usize {
 }
 fn paste(game: &mut Game<'_>, state: &mut State) -> bool {
     if state.clipboard.is_empty() {
-        failure(game, "The clipboard is empty (//copy or //cut first)");
+        failure(game, "The clipboard is empty (//copy, //cut or //schem load first)");
         return false;
     }
     let at = player_pos(game);
     let changed = paste_at(game, state, at);
-    message(game, format!("Pasted {changed} blocks"));
+    if state.clipboard_name.is_empty() {
+        message(game, format!("Pasted {changed} blocks"));
+    } else {
+        message(
+            game,
+            format!("Pasted {changed} blocks of {}", state.clipboard_name),
+        );
+    }
     true
 }
 fn move_selection(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool {
@@ -1298,5 +1315,271 @@ fn redo(game: &mut Game<'_>, state: &mut State) -> bool {
     }
     message(game, format!("Redid {} block changes", edit.len()));
     state.undo.push(undo);
+    true
+}
+
+/// This world's schematics: `<world>/schematics`, where `//schem save` writes
+/// and `//schem load` looks first.
+fn schematics_dir(game: &Game<'_>) -> PathBuf {
+    game.world_root.join("schematics")
+}
+/// The extensions a schematic file can carry, in the order a name is tried.
+const SCHEMATIC_EXTENSIONS: [&str; 4] = ["", ".schem", ".litematic", ".schematic"];
+/// The file `name` means: a path as typed, else this world's `schematics/`.
+fn schematic_path(game: &Game<'_>, name: &str) -> Option<PathBuf> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let typed = std::path::Path::new(name);
+    let external = typed.is_absolute() || name.contains('/') || name.contains('\\');
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if external {
+        for extension in SCHEMATIC_EXTENSIONS {
+            candidates.push(PathBuf::from(format!("{name}{extension}")));
+        }
+    }
+    let directory = schematics_dir(game);
+    for extension in SCHEMATIC_EXTENSIONS {
+        candidates.push(directory.join(format!("{name}{extension}")));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+/// A block as a schematic names it: `minecraft:oak_stairs[facing=east,half=top]`.
+fn block_spec(game: &Game<'_>, state: BlockStateId) -> String {
+    let Some(descriptor) = game.pack.assets.registry.state(state) else {
+        return "minecraft:air".to_owned();
+    };
+    if descriptor.properties.is_empty() {
+        return descriptor.name.clone();
+    }
+    let pairs: Vec<String> = descriptor
+        .properties
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    format!("{}[{}]", descriptor.name, pairs.join(","))
+}
+fn schem(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool {
+    match args.first().map(|word| word.to_ascii_lowercase()).as_deref() {
+        Some("list") => list_schematics(game),
+        Some("save") => save_schematic(game, state, &args[1..]),
+        Some("load") => load_schematic(game, state, &args[1..]),
+        Some("delete") | Some("remove") => delete_schematic(game, &args[1..]),
+        Some(_) => load_schematic(game, state, args),
+        None => {
+            failure(
+                game,
+                "Usage: //schem <list|save <name>|load <name>|delete <name>>",
+            );
+            false
+        }
+    }
+}
+fn load(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool {
+    load_schematic(game, state, args)
+}
+fn load_schematic(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool {
+    if args.is_empty() {
+        failure(
+            game,
+            format!(
+                "Usage: //schem load <name>, files in {}",
+                schematics_dir(game).display()
+            ),
+        );
+        return false;
+    }
+    let name = args.join(" ");
+    let found = schematic_path(game, &name).or_else(|| schematic_path(game, args[0]));
+    let Some(path) = found else {
+        failure(
+            game,
+            format!(
+                "No schematic {name} in {}",
+                schematics_dir(game).display()
+            ),
+        );
+        return false;
+    };
+    let read = {
+        let view: &Game<'_> = game;
+        worldedit_schem::read(&path, &|spec: &str| block_state(view, spec))
+    };
+    let loaded = match read {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            failure(game, format!("Could not read {}: {error}", path.display()));
+            return false;
+        }
+    };
+    let label = path
+        .file_name()
+        .map(|file| file.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let (size, count, unknown) = (loaded.size, loaded.blocks.len(), loaded.unknown);
+    let format = loaded.format;
+    state.clipboard = loaded.blocks;
+    state.clipboard_name = format!("{label} ({format})");
+    message(
+        game,
+        format!(
+            "Loaded {label} ({format}): {}x{}x{}, {count} blocks; //paste places it at your feet",
+            size[0], size[1], size[2]
+        ),
+    );
+    if unknown > 0 {
+        message(
+            game,
+            format!("  {unknown} of its blocks have no match in this game and were left out"),
+        );
+    }
+    true
+}
+fn save_schematic(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool {
+    let Some((lo, hi, volume)) = selection(game, state) else {
+        return false;
+    };
+    if volume > MAX_VOLUME {
+        too_big(game, volume);
+        return false;
+    }
+    let given = args.join(" ");
+    let given = given.trim();
+    let name = if given.is_empty() {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        format!("build-{seconds}")
+    } else {
+        given.to_owned()
+    };
+    if name.contains('/') || name.contains('\\') || name.contains(':') {
+        failure(game, "A schematic's name cannot hold a path: //schem save <name>");
+        return false;
+    }
+    let file = if name.to_ascii_lowercase().ends_with(".schem") {
+        name.clone()
+    } else {
+        format!("{name}.schem")
+    };
+    let directory = schematics_dir(game);
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        failure(game, format!("Could not make {}: {error}", directory.display()));
+        return false;
+    }
+    let size = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
+    let air = air(game);
+    let mut order = Vec::with_capacity(volume as usize);
+    for y in lo[1]..=hi[1] {
+        for z in lo[2]..=hi[2] {
+            for x in lo[0]..=hi[0] {
+                order.push(if game.world.loaded(x, z) {
+                    game.world.block(x, y, z)
+                } else {
+                    air
+                });
+            }
+        }
+    }
+    let written = {
+        let view: &Game<'_> = game;
+        worldedit_schem::write_sponge(size, &order, &|state: BlockStateId| block_spec(view, state))
+    };
+    let bytes = match written {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            failure(game, format!("Could not write {file}: {error}"));
+            return false;
+        }
+    };
+    let path = directory.join(&file);
+    if let Err(error) = std::fs::write(&path, &bytes) {
+        failure(game, format!("Could not write {}: {error}", path.display()));
+        return false;
+    }
+    message(
+        game,
+        format!(
+            "Saved {}x{}x{} ({} blocks) as {}",
+            size[0],
+            size[1],
+            size[2],
+            order.len(),
+            path.display()
+        ),
+    );
+    true
+}
+fn list_schematics(game: &mut Game<'_>) -> bool {
+    let directory = schematics_dir(game);
+    message(game, format!("Schematics in {}:", directory.display()));
+    if !directory.is_dir() {
+        message(
+            game,
+            "  (none: //schem save <name> makes one, or copy a .schem, .litematic or .schematic there)",
+        );
+        return true;
+    }
+    let mut rows: Vec<(String, u64)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&directory) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let known = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "schem" | "litematic" | "schematic"
+                    )
+                });
+            if !known {
+                continue;
+            }
+            let Some(name) = path
+                .file_name()
+                .map(|file| file.to_string_lossy().into_owned())
+            else {
+                continue;
+            };
+            let bytes = entry.metadata().map_or(0, |metadata| metadata.len());
+            rows.push((name, bytes));
+        }
+    }
+    rows.sort();
+    if rows.is_empty() {
+        message(game, "  (none)");
+    }
+    for (name, bytes) in rows.iter().take(20) {
+        let size = if *bytes >= 1024 {
+            format!("{} KiB", bytes / 1024)
+        } else {
+            format!("{bytes} B")
+        };
+        message(game, format!("  {name} ({size})"));
+    }
+    if rows.len() > 20 {
+        message(game, format!("  ... and {} more", rows.len() - 20));
+    }
+    true
+}
+fn delete_schematic(game: &mut Game<'_>, args: &[&str]) -> bool {
+    if args.is_empty() {
+        failure(game, "Usage: //schem delete <name>");
+        return false;
+    }
+    let name = args.join(" ");
+    let Some(path) = schematic_path(game, &name) else {
+        failure(game, format!("No schematic {name}"));
+        return false;
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => message(game, format!("Deleted {}", path.display())),
+        Err(error) => {
+            failure(game, format!("Could not delete {}: {error}", path.display()));
+            return false;
+        }
+    }
     true
 }

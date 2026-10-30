@@ -1,6 +1,6 @@
 [mod]
 id = "worldedit"
-version = "1.0.0"
+version = "1.1.0"
 priority = 100
 
 # The editor's own module: staged into `crates/horizon-client/src/game.rs` as
@@ -10,6 +10,21 @@ id = "runtime"
 file = "crates/horizon-client/src/game.rs"
 name = "worldedit"
 source = "runtime.rs"
+
+# Schematic files: Sponge `.schem`, Litematica `.litematic` and legacy MCEdit
+# `.schematic`, read and written beside the editor.
+[[module]]
+id = "schematic"
+file = "crates/horizon-client/src/game.rs"
+name = "worldedit_schem"
+source = "schematic.rs"
+
+# The 1.12 to 1.13 block table a `.schematic` needs, from gen_legacy.py.
+[[module]]
+id = "legacy"
+file = "crates/horizon-client/src/game.rs"
+name = "worldedit_legacy"
+source = "legacy_ids.rs"
 
 # A command typed here (single player, in frame, or the machine hosting a LAN
 # world or dedicated server). `//set` arrives as `/set`.
@@ -75,7 +90,6 @@ bindings = [
   { name = "button", ty = "winit::event::MouseButton", value = "button" },
   { name = "pressed", ty = "bool", value = "pressed" },
 ]
-
 [compatibility]
 # The Horizon source this bundle is planned and built on: Nightly 2026-10-28.
 # A launcher build uses this commit's source. Planning it against another tree
