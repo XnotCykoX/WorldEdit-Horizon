@@ -56,6 +56,11 @@ takes it back.
 //schem delete castle
 ```
 
+`//schem` with no argument opens a menu over the world instead, listing the world's `schematics/` folder —
+pick a file, **Load & Paste** (or `Enter`), **Open Folder** to drag files in, **Refresh** (`F5`), **Done**
+(`Esc`). The folder is made when the world opens, so it is there before the first schematic; `//schem folder`
+opens it from the chat line too.
+
 | File | Format | What is read |
 |---|---|---|
 | `.schem` | Sponge v1, v2, v3 (WorldEdit, FAWE, Axiom) | the palette and varint `BlockData`, wherever that version keeps them |
@@ -73,7 +78,7 @@ across, not what is in them. A file over the 250,000-block edit limit is refused
 
 ## Install with the launcher
 
-1. Download `worldedit-native-1.1.0.hnmod` (or pack it: `python3 tools/pack.py`).
+1. Download `worldedit-native-1.2.1.hnmod` (or pack it: `python3 tools/pack.py`).
 2. Launcher → Mods → install the `.hnmod`, then Settings → Game → **Native mods (experimental)**, then **Build**.
 3. Play the **Native mods** instance the build creates.
 

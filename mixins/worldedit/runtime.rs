@@ -22,6 +22,7 @@
 // borrowed while game code runs and no field is added to `Game`.
 use super::Game;
 use super::worldedit_schem;
+use horizon_client::chat::worldedit_paths;
 use horizon_world::registry::BlockStateId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -88,7 +89,10 @@ struct State {
 }
 /// The salt of the next edit: one more than the last, scrambled.
 fn next_salt(state: &mut State) -> u64 {
-    state.salt = state.salt.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1);
+    state.salt = state
+        .salt
+        .wrapping_mul(0x5851_f42d_4c95_7f2d)
+        .wrapping_add(1);
     let mut h = state.salt;
     h ^= h >> 33;
     h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
@@ -493,7 +497,8 @@ fn help(game: &mut Game<'_>) {
         "//sphere, //hsphere, //cyl, //hcyl, //pyramid, //hpyramid <block> <radius> [height]",
         "//line <block> [thickness], //copy, //cut, //paste, //move <amount> <dir>",
         "//count <block>, //distr, //undo, //redo, //clearhistory",
-        "//schem save <name>, //schem load <name>, //schem list, then //paste",
+        "//schem opens the schematics menu: pick a file, Load & Paste, or Open Folder and drag one in.",
+        "//schem list, //schem load <name>, //schem save <name>, //schem delete <name>, //schem folder.",
         "Schematics read .schem (Sponge), .litematic (Litematica) and .schematic (MCEdit).",
     ] {
         message(game, line);
@@ -832,7 +837,10 @@ fn shell(game: &mut Game<'_>, state: &mut State, args: &[&str], shape: Shell) ->
         return false;
     };
     let Some(spec) = args.first() else {
-        failure(game, "Usage: //walls|//outline|//hollow|//faces <block>[,<block>]");
+        failure(
+            game,
+            "Usage: //walls|//outline|//hollow|//faces <block>[,<block>]",
+        );
         return false;
     };
     if volume > MAX_VOLUME {
@@ -1042,7 +1050,10 @@ fn cylinder(game: &mut Game<'_>, state: &mut State, args: &[&str], mut hollow: b
         args = &args[1..];
     }
     let Some(spec) = args.first() else {
-        failure(game, "Usage: //cyl [-h] <block>[,<block>] <radius> [height]");
+        failure(
+            game,
+            "Usage: //cyl [-h] <block>[,<block>] <radius> [height]",
+        );
         return false;
     };
     let radius: i32 = args
@@ -1244,7 +1255,10 @@ fn paste_at(game: &mut Game<'_>, state: &mut State, at: Pos) -> usize {
 }
 fn paste(game: &mut Game<'_>, state: &mut State) -> bool {
     if state.clipboard.is_empty() {
-        failure(game, "The clipboard is empty (//copy, //cut or //schem load first)");
+        failure(
+            game,
+            "The clipboard is empty (//copy, //cut or //schem load first)",
+        );
         return false;
     }
     let at = player_pos(game);
@@ -1321,7 +1335,17 @@ fn redo(game: &mut Game<'_>, state: &mut State) -> bool {
 /// This world's schematics: `<world>/schematics`, where `//schem save` writes
 /// and `//schem load` looks first.
 fn schematics_dir(game: &Game<'_>) -> PathBuf {
-    game.world_root.join("schematics")
+    // The window of a world on its own server thread has no folder of its own:
+    // the world it opened is the one the helpers remember.
+    let world = if game.world_root.as_os_str().is_empty() {
+        worldedit_paths::remembered().unwrap_or_default()
+    } else {
+        game.world_root.clone()
+    };
+    if world.as_os_str().is_empty() {
+        return PathBuf::new();
+    }
+    worldedit_paths::ensure_world(&world)
 }
 /// The extensions a schematic file can carry, in the order a name is tried.
 const SCHEMATIC_EXTENSIONS: [&str; 4] = ["", ".schem", ".litematic", ".schematic"];
@@ -1361,20 +1385,64 @@ fn block_spec(game: &Game<'_>, state: BlockStateId) -> String {
     format!("{}[{}]", descriptor.name, pairs.join(","))
 }
 fn schem(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool {
-    match args.first().map(|word| word.to_ascii_lowercase()).as_deref() {
+    match args
+        .first()
+        .map(|word| word.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("list") => list_schematics(game),
         Some("save") => save_schematic(game, state, &args[1..]),
         Some("load") => load_schematic(game, state, &args[1..]),
         Some("delete") | Some("remove") => delete_schematic(game, &args[1..]),
+        Some("folder") | Some("open") => folder(game),
         Some(_) => load_schematic(game, state, args),
+        // A window browses the folder; a console only has the list.
         None => {
-            failure(
-                game,
-                "Usage: //schem <list|save <name>|load <name>|delete <name>>",
-            );
-            false
+            if super::worldedit_menu::open(game) {
+                return true;
+            }
+            list_schematics(game)
         }
     }
+}
+/// `//schem folder`: the world's schematics folder, in the file manager, so
+/// files can be dragged into it.
+fn folder(game: &mut Game<'_>) -> bool {
+    let dir = schematics_dir(game);
+    if dir.as_os_str().is_empty() {
+        failure(
+            game,
+            "No world folder yet: schematics live beside the world",
+        );
+        return false;
+    }
+    super::packs::open_folder(&dir);
+    message(game, format!("Opened {}", dir.display()));
+    true
+}
+
+/// `//schem` typed in the chat screen, before the message goes anywhere: a
+/// window over its own world opens the menu, and everything else is left to
+/// the world's server (`//schem list`, `//schem load <file>`, guests).
+pub(super) fn schem_input(game: &mut Game<'_>, message: &str) -> bool {
+    match parse_command(message) {
+        Some((name, args)) if name == "schem" && args.is_empty() => {
+            super::worldedit_menu::open(game)
+        }
+        _ => false,
+    }
+}
+
+/// The schematics menu's hooks, from `horizon-mixin.toml`; each returns false
+/// when no menu is open, which leaves the pause menu its own draw and input.
+pub(super) fn menu_draw(game: &mut Game<'_>, batch: &mut horizon_client::hud::HudBatch) -> bool {
+    super::worldedit_menu::draw(game, batch)
+}
+pub(super) fn menu_click(game: &mut Game<'_>) -> bool {
+    super::worldedit_menu::click(game)
+}
+pub(super) fn menu_key(game: &mut Game<'_>, key: winit::keyboard::KeyCode) -> bool {
+    super::worldedit_menu::key(game, key)
 }
 fn load(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool {
     load_schematic(game, state, args)
@@ -1395,10 +1463,7 @@ fn load_schematic(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool
     let Some(path) = found else {
         failure(
             game,
-            format!(
-                "No schematic {name} in {}",
-                schematics_dir(game).display()
-            ),
+            format!("No schematic {name} in {}", schematics_dir(game).display()),
         );
         return false;
     };
@@ -1455,7 +1520,10 @@ fn save_schematic(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool
         given.to_owned()
     };
     if name.contains('/') || name.contains('\\') || name.contains(':') {
-        failure(game, "A schematic's name cannot hold a path: //schem save <name>");
+        failure(
+            game,
+            "A schematic's name cannot hold a path: //schem save <name>",
+        );
         return false;
     }
     let file = if name.to_ascii_lowercase().ends_with(".schem") {
@@ -1465,7 +1533,10 @@ fn save_schematic(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool
     };
     let directory = schematics_dir(game);
     if let Err(error) = std::fs::create_dir_all(&directory) {
-        failure(game, format!("Could not make {}: {error}", directory.display()));
+        failure(
+            game,
+            format!("Could not make {}: {error}", directory.display()),
+        );
         return false;
     }
     let size = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
@@ -1513,54 +1584,43 @@ fn save_schematic(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool
 }
 fn list_schematics(game: &mut Game<'_>) -> bool {
     let directory = schematics_dir(game);
-    message(game, format!("Schematics in {}:", directory.display()));
-    if !directory.is_dir() {
+    if directory.as_os_str().is_empty() {
+        message(
+            game,
+            "No world is open: schematics live in the world's own folder",
+        );
+        return true;
+    }
+    let entries = worldedit_paths::entries(&directory);
+    message(
+        game,
+        format!(
+            "Schematics in {} ({} file{}):",
+            directory.display(),
+            entries.len(),
+            if entries.len() == 1 { "" } else { "s" }
+        ),
+    );
+    if entries.is_empty() {
         message(
             game,
             "  (none: //schem save <name> makes one, or copy a .schem, .litematic or .schematic there)",
         );
         return true;
     }
-    let mut rows: Vec<(String, u64)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&directory) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let known = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    matches!(
-                        extension.to_ascii_lowercase().as_str(),
-                        "schem" | "litematic" | "schematic"
-                    )
-                });
-            if !known {
-                continue;
-            }
-            let Some(name) = path
-                .file_name()
-                .map(|file| file.to_string_lossy().into_owned())
-            else {
-                continue;
-            };
-            let bytes = entry.metadata().map_or(0, |metadata| metadata.len());
-            rows.push((name, bytes));
-        }
+    for entry in entries.iter().take(20) {
+        message(
+            game,
+            format!(
+                "  {} ({} · {})",
+                entry.file,
+                entry.format,
+                worldedit_paths::human_size(entry.bytes)
+            ),
+        );
     }
-    rows.sort();
-    if rows.is_empty() {
-        message(game, "  (none)");
-    }
-    for (name, bytes) in rows.iter().take(20) {
-        let size = if *bytes >= 1024 {
-            format!("{} KiB", bytes / 1024)
-        } else {
-            format!("{bytes} B")
-        };
-        message(game, format!("  {name} ({size})"));
-    }
-    if rows.len() > 20 {
-        message(game, format!("  ... and {} more", rows.len() - 20));
+    if entries.len() > 20 {
+        message(game, format!("  ... and {} more", entries.len() - 20));
     }
     true
 }
@@ -1577,7 +1637,10 @@ fn delete_schematic(game: &mut Game<'_>, args: &[&str]) -> bool {
     match std::fs::remove_file(&path) {
         Ok(()) => message(game, format!("Deleted {}", path.display())),
         Err(error) => {
-            failure(game, format!("Could not delete {}: {error}", path.display()));
+            failure(
+                game,
+                format!("Could not delete {}: {error}", path.display()),
+            );
             return false;
         }
     }

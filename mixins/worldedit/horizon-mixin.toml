@@ -1,6 +1,6 @@
 [mod]
 id = "worldedit"
-version = "1.1.0"
+version = "1.2.1"
 priority = 100
 
 # The editor's own module: staged into `crates/horizon-client/src/game.rs` as
@@ -25,6 +25,24 @@ id = "legacy"
 file = "crates/horizon-client/src/game.rs"
 name = "worldedit_legacy"
 source = "legacy_ids.rs"
+
+# The schematics menu: `//schem` with no argument, drawn over the pause menu's
+# screen, with its own clicks and keys.
+[[module]]
+id = "menu"
+file = "crates/horizon-client/src/game.rs"
+name = "worldedit_menu"
+source = "schem-menu.rs"
+
+# The schematics folder itself — where it is, what is in it, and the world the
+# game last opened — shared by the game (above) and the chat completions. It
+# goes in the library and is `pub`, so the game binary can reach it too.
+[[module]]
+id = "paths"
+file = "crates/horizon-client/src/chat.rs"
+name = "worldedit_paths"
+source = "schem-paths.rs"
+visibility = "pub"
 
 # A command typed here (single player, in frame, or the machine hosting a LAN
 # world or dedicated server). `//set` arrives as `/set`.
@@ -76,6 +94,65 @@ file = "crates/horizon-client/src/chat.rs"
 name = "worldedit_chat"
 source = "chat-suggestions.rs"
 
+# `//schem` typed in chat: a window over its own world opens the menu before
+# the line goes to the server.
+[[injection]]
+id = "schem-input"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::chat::Game<'_>::handle_chat_input"
+helper = "schem-input.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "message", ty = "&str", value = "message" },
+]
+
+# The menu draws itself over the pause menu's screen (Screen::Paused with
+# `pause_menu` set): its draw, its clicks and its keys hand over while a menu
+# is open, and the pause menu keeps them otherwise.
+[[injection]]
+id = "schem-draw"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::screens::Game<'_>::draw_pause_menu"
+helper = "schem-draw.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "batch" },
+]
+
+[[injection]]
+id = "schem-click"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::screens::Game<'_>::pause_click"
+helper = "schem-click.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[injection]]
+id = "schem-key"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::Game<'_>::key_pressed"
+helper = "schem-key.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "winit::keyboard::KeyCode", value = "key" },
+]
+
+# Entering a world makes its `schematics/` folder and notes the world, so the
+# folder is there to drag files into and the completions list it.
+[[injection]]
+id = "open-world"
+kind = "HEAD"
+target = "horizon_client::game::Game<'_>::open_world"
+helper = "open-world.rs"
+bindings = [
+  { name = "folder", ty = "&str", value = "folder" },
+]
+
 # The wand: left click sets position 1, right click position 2, while the
 # wooden axe `//wand` gave is held. The click is taken before the game starts
 # mining or using an item.
@@ -90,6 +167,7 @@ bindings = [
   { name = "button", ty = "winit::event::MouseButton", value = "button" },
   { name = "pressed", ty = "bool", value = "pressed" },
 ]
+
 [compatibility]
 # The Horizon source this bundle is planned and built on: Nightly 2026-10-28.
 # A launcher build uses this commit's source. Planning it against another tree
