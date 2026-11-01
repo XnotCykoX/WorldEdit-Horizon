@@ -1,6 +1,6 @@
 [mod]
 id = "worldedit"
-version = "1.2.1"
+version = "1.2.1+local.d009ebd"
 priority = 100
 
 # The editor's own module: staged into `crates/horizon-client/src/game.rs` as
@@ -39,7 +39,7 @@ source = "schem-menu.rs"
 # goes in the library and is `pub`, so the game binary can reach it too.
 [[module]]
 id = "paths"
-file = "crates/horizon-client/src/chat.rs"
+file = "crates/horizon-client-render/src/chat.rs"
 name = "worldedit_paths"
 source = "schem-paths.rs"
 visibility = "pub"
@@ -79,7 +79,7 @@ bindings = [
 id = "chat-suggestions"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::chat::ChatScreen::update_command_info"
+target = "horizon_client_render::chat::ChatScreen::update_command_info"
 helper = "chat-hook.rs"
 bindings = [
   { name = "screen", ty = "&mut crate::chat::ChatScreen", value = "self" },
@@ -90,7 +90,7 @@ bindings = [
 # The completions' table, staged into chat.rs as `mod worldedit_chat`.
 [[module]]
 id = "chat"
-file = "crates/horizon-client/src/chat.rs"
+file = "crates/horizon-client-render/src/chat.rs"
 name = "worldedit_chat"
 source = "chat-suggestions.rs"
 
@@ -169,8 +169,8 @@ bindings = [
 ]
 
 [compatibility]
-# The Horizon source this bundle is planned and built on: Nightly 2026-10-28.
+# The Horizon source this local compatibility build is planned and built on.
 # A launcher build uses this commit's source. Planning it against another tree
 # means changing this line to that tree's commit (or dropping the section: a
 # bundle without a pin builds on the installed version's commit).
-horizon_revision = "83f15fa276c44711276b6ceb5f0fe0c9c534dc66"
+horizon_revision = "d009ebd140476b5bdc958c00f56a75e82abec691"
