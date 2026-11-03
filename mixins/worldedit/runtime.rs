@@ -339,12 +339,12 @@ fn region(game: &Game<'_>, state: &State) -> Option<(Pos, Pos, i64)> {
     let (a, b) = (state.pos1?, state.pos2?);
     let lo = [
         a[0].min(b[0]),
-        a[1].min(b[1]).max(game.dim.min_y()),
+        a[1].min(b[1]).max(game.dim.shape().min_y),
         a[2].min(b[2]),
     ];
     let hi = [
         a[0].max(b[0]),
-        a[1].max(b[1]).min(game.dim.max_y()),
+        a[1].max(b[1]).min((game.dim.shape().max_y() - 1)),
         a[2].max(b[2]),
     ];
     if hi[1] < lo[1] {
@@ -468,13 +468,13 @@ fn describe(game: &mut Game<'_>, lo: Pos, hi: Pos, volume: i64) {
 /// The wooden axe `//wand` gives: named, and that name is what marks it.
 fn wand_stack() -> horizon_client::items::ItemStack {
     let mut stack = horizon_client::items::ItemStack::new(WAND_ITEM, 1);
-    stack.data_mut().custom_name = Some(WAND_NAME.to_owned());
+    stack.data_mut().custom_name = Some(horizon_world::nbt::Tag::String(WAND_NAME.into()));
     stack
 }
 /// Whether `stack` is the wand `//wand` handed out.
 fn is_wand(stack: &horizon_client::items::ItemStack) -> bool {
     &*stack.item == WAND_ITEM
-        && stack.data().and_then(|data| data.custom_name.as_deref()) == Some(WAND_NAME)
+        && stack.data().and_then(|data| data.custom_name_plain()).as_deref() == Some(WAND_NAME)
 }
 /// `//wand`: the wooden axe, into the inventory.
 fn give_wand(game: &mut Game<'_>) -> bool {
@@ -726,8 +726,8 @@ fn resize(game: &mut Game<'_>, state: &mut State, args: &[&str], grow: bool) -> 
             }
         }
     }
-    lo[1] = lo[1].max(game.dim.min_y());
-    hi[1] = hi[1].min(game.dim.max_y());
+    lo[1] = lo[1].max(game.dim.shape().min_y);
+    hi[1] = hi[1].min((game.dim.shape().max_y() - 1));
     state.pos1 = Some(lo);
     state.pos2 = Some(hi);
     if let Some((lo, hi, volume)) = region(game, state) {
@@ -1022,7 +1022,7 @@ fn sphere(game: &mut Game<'_>, state: &mut State, args: &[&str], mut hollow: boo
         for dy in -radius..=radius {
             for dz in -radius..=radius {
                 let (x, y, z) = (center[0] + dx, center[1] + dy, center[2] + dz);
-                if y < game.dim.min_y() || y > game.dim.max_y() || !game.world.loaded(x, z) {
+                if y < game.dim.shape().min_y || y > (game.dim.shape().max_y() - 1) || !game.world.loaded(x, z) {
                     continue;
                 }
                 let distance = dx * dx + dy * dy + dz * dz;
@@ -1073,7 +1073,7 @@ fn cylinder(game: &mut Game<'_>, state: &mut State, args: &[&str], mut hollow: b
     let inner = (radius - 1).max(0);
     let mut positions = Vec::new();
     for y in center[1]..(center[1] + height) {
-        if y < game.dim.min_y() || y > game.dim.max_y() {
+        if y < game.dim.shape().min_y || y > (game.dim.shape().max_y() - 1) {
             continue;
         }
         for dx in -radius..=radius {
@@ -1122,7 +1122,7 @@ fn pyramid(game: &mut Game<'_>, state: &mut State, args: &[&str], mut hollow: bo
     let mut positions = Vec::new();
     for layer in 0..size {
         let y = base[1] + layer;
-        if y > game.dim.max_y() {
+        if y > (game.dim.shape().max_y() - 1) {
             break;
         }
         let radius = size - 1 - layer;
@@ -1185,7 +1185,7 @@ fn line(game: &mut Game<'_>, state: &mut State, args: &[&str]) -> bool {
             for dy in -thickness..=thickness {
                 for dz in -thickness..=thickness {
                     let pos = [at[0] + dx, at[1] + dy, at[2] + dz];
-                    if pos[1] < game.dim.min_y() || pos[1] > game.dim.max_y() {
+                    if pos[1] < game.dim.shape().min_y || pos[1] > (game.dim.shape().max_y() - 1) {
                         continue;
                     }
                     if seen.insert(pos) && game.world.loaded(pos[0], pos[2]) {
@@ -1241,7 +1241,7 @@ fn paste_at(game: &mut Game<'_>, state: &mut State, at: Pos) -> usize {
     let mut ops = Vec::with_capacity(blocks.len());
     for (offset, block) in &blocks {
         let pos = [at[0] + offset[0], at[1] + offset[1], at[2] + offset[2]];
-        if pos[1] < game.dim.min_y() || pos[1] > game.dim.max_y() {
+        if pos[1] < game.dim.shape().min_y || pos[1] > (game.dim.shape().max_y() - 1) {
             continue;
         }
         if !game.world.loaded(pos[0], pos[2]) {
